@@ -1,3 +1,6 @@
+import { recoverMessageAddress } from 'viem'
+import { signMessageFor } from './message'
+
 async function reownRpc(method: string, params: unknown[], chainId: number) {
   const url = `https://rpc.walletconnect.org/v1?chainId=eip155:${chainId}&projectId=${process.env.REOWN_PROJECT_ID!}`
   const res = await fetch(url, {
@@ -23,12 +26,14 @@ export class PendingError extends Error {
   constructor(msg: string) { super(msg); this.name = 'PendingError' }
 }
 
+export interface VerifiedTx { amount: string; from: string }
+
 export async function verifyEVM(
   hash: string,
   ourAddr: string,
   chainId: number,
   symbol: string
-): Promise<string> {
+): Promise<VerifiedTx> {
   const tx = await reownRpc('eth_getTransactionByHash', [hash], chainId) as Record<string, string> | null
 
   if (!tx) throw new PendingError('Transaction not found yet. Retrying…')
@@ -37,7 +42,7 @@ export async function verifyEVM(
   if (!tx.to || tx.to.toLowerCase() !== ourAddr.toLowerCase())
     throw new Error('Transaction recipient does not match the expected address.')
 
-  return formatWei(BigInt(tx.value), symbol, 18)
+  return { amount: formatWei(BigInt(tx.value), symbol, 18), from: tx.from }
 }
 
 const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
@@ -49,9 +54,10 @@ export async function verifyERC20(
   chainId: number,
   symbol: string,
   decimals: number
-): Promise<string> {
+): Promise<VerifiedTx> {
   const receipt = await reownRpc('eth_getTransactionReceipt', [hash], chainId) as {
     blockNumber: string | null
+    from: string
     logs: { address: string; topics: string[]; data: string }[]
   } | null
 
@@ -69,5 +75,13 @@ export async function verifyERC20(
 
   if (!log.data || log.data === '0x') throw new Error('Transfer log has no value data.')
   const amount = BigInt(log.data)
-  return formatWei(amount, symbol, decimals)
+  return { amount: formatWei(amount, symbol, decimals), from: receipt.from }
+}
+
+export async function verifySender(hash: string, expectedFrom: string, signature: string): Promise<boolean> {
+  const recovered = await recoverMessageAddress({
+    message: signMessageFor(hash),
+    signature: signature as `0x${string}`,
+  })
+  return recovered.toLowerCase() === expectedFrom.toLowerCase()
 }

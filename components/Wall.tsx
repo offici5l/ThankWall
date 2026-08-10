@@ -4,11 +4,12 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useAppKit, useAppKitAccount } from '@reown/appkit/react'
 import {
   sendTransaction, switchChain,
-  writeContract,
+  writeContract, signMessage,
 } from '@wagmi/core'
 import { parseEther, parseUnits, erc20Abi } from 'viem'
 import { mainnet, bsc } from '@reown/appkit/networks'
 import { getWagmiAdapter } from '@/components/AppKitProvider'
+import { signMessageFor } from '@/lib/message'
 import type { Entry } from '@/lib/types'
 
 type StatusType = 'error' | 'success' | 'loading' | ''
@@ -24,11 +25,11 @@ const CURRENCY_META: Record<string, { label: string; symbol: string; network: st
   'USDT-ETH': { label: 'USDT (ERC-20)', symbol: 'USDT', network: 'Ethereum Mainnet',  networkShort: 'Ethereum',  decimals: 6,  color: '#26A17B' },
 }
 
-interface PendingTx { hash: string | null; currency: string; name: string; message: string | null }
+interface PendingTx { hash: string | null; signature: string | null; currency: string; name: string; message: string | null }
 
 function isUnrecoverable(msg: string) {
   const m = msg.toLowerCase()
-  return m.includes('recipient does not match') || m.includes('no value data')
+  return m.includes('recipient does not match') || m.includes('no value data') || m.includes('does not match the wallet')
 }
 
 function timeAgo(iso: string) {
@@ -137,7 +138,7 @@ export function Wall({ description }: { description?: string }) {
     const res = await fetch('/api/submit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: p.name, message: p.message, type: p.currency, hash: p.hash }),
+      body: JSON.stringify({ name: p.name, message: p.message, type: p.currency, hash: p.hash, signature: p.signature }),
     })
     if (res.status === 409) return 'duplicate'
     if (res.status === 202) return 'pending'
@@ -165,12 +166,34 @@ export function Wall({ description }: { description?: string }) {
       clearPending()
       return
     }
+    const hash = pending.hash
 
     verifyingRef.current = true
     setLoading(true)
     setHasPending(true)
     setPendingTx(pending)
     setModalOpen(true)
+
+    if (!pending.signature) {
+      setStatus('Sign to verify you own this transaction…', 'loading')
+      try {
+        const adapter = getWagmiAdapter()
+        const signature = await signMessage(adapter.wagmiConfig, { message: signMessageFor(hash) })
+        pending = { ...pending, signature }
+        savePending(pending)
+        setPendingTx(pending)
+      } catch (e: unknown) {
+        if (!verifyingRef.current) return
+        const err = e as { code?: number | string; shortMessage?: string; message?: string }
+        const m = (err.shortMessage ?? err.message ?? '').toLowerCase()
+        const rejected = err.code === 4001 || m.includes('rejected') || m.includes('denied')
+        verifyingRef.current = false
+        setLoading(false)
+        setStatus(rejected ? 'Signature required to verify your donation.' : 'Could not sign the verification message.', 'error')
+        return
+      }
+    }
+
     setStatus('Verifying…', 'loading')
 
     const MAX_ATTEMPTS = 30
@@ -185,7 +208,16 @@ export function Wall({ description }: { description?: string }) {
           await new Promise(r => setTimeout(r, RETRY_MS))
           continue
         }
-        onSuccess(result === 'duplicate' ? undefined : result)
+        if (result === 'duplicate') {
+          clearPending()
+          verifyingRef.current = false
+          setHasPending(false)
+          setPendingTx(null)
+          setLoading(false)
+          setStatus('This transaction was already recorded on the wall.', 'error')
+          return
+        }
+        onSuccess(result)
         return
       } catch (e: unknown) {
         if (!verifyingRef.current) return
@@ -321,7 +353,7 @@ export function Wall({ description }: { description?: string }) {
 
       const isBsc = targetChain.id === bsc.id
 
-      const preSend: PendingTx = { hash: null, currency, name: nm, message: msg }
+      const preSend: PendingTx = { hash: null, signature: null, currency, name: nm, message: msg }
       savePending(preSend)
 
       let txHash: string
@@ -343,7 +375,7 @@ export function Wall({ description }: { description?: string }) {
         })
       }
 
-      const pending: PendingTx = { hash: txHash, currency, name: nm, message: msg }
+      const pending: PendingTx = { hash: txHash, signature: null, currency, name: nm, message: msg }
       savePending(pending)
       setLoading(false)
       setStatus('')
@@ -507,7 +539,7 @@ export function Wall({ description }: { description?: string }) {
                           style={{ marginTop: 16 }}
                           onClick={() => { setStatus(''); runVerify(pendingTx) }}
                         >
-                          Retry Verification
+                          {pendingTx.signature ? 'Retry Verification' : 'Sign to Verify'}
                         </button>
                       )}
                       <button

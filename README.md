@@ -22,6 +22,8 @@
 
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Foffici5l%2FThankWall&env=REOWN_PROJECT_ID,UPSTASH_REDIS_REST_URL,UPSTASH_REDIS_REST_TOKEN,ADDRESS_EVM,DESCRIPTION,MIN_ETH,MIN_BNB,MIN_USDT)
 
+New to this? [SETUP.md](SETUP.md) walks through getting each variable, step by step.
+
 ---
 
 </div>
